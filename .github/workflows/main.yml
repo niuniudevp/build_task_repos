@@ -1,0 +1,106 @@
+name: Build GCC DEB Package for Ubuntu x86_64
+
+on:
+  workflow_dispatch:
+    inputs:
+      gcc_version:
+        description: 'GCC Version Tag (from gcc-mirror)'
+        required: true
+        default: 'releases/gcc-16.1.0'
+      release_tag:
+        description: 'Release Tag Name for your repo'
+        required: true
+        default: 'v16.1.0-x86_64-deb'
+
+jobs:
+  build-gcc-ubuntu:
+    runs-on: ubuntu-latest # 在 Linux 虚拟机中原生构建
+    
+    permissions:
+      contents: write # 确保有权限自动创建 Release 并上传包
+    
+    steps:
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        # 安装 Linux 原生编译所需的完整必备依赖库
+        sudo apt-get install -y build-essential bison flex libmpc-dev libmpfr-dev libgmp-dev zlib1g-dev libssl-dev libxml2-dev uuid-dev
+
+    - name: Clone GCC Source
+      run: |
+        git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://github.com/gcc-mirror/gcc.git gcc-src
+
+    - name: Download GCC Prerequisites
+      run: |
+        cd gcc-src
+        ./contrib/download_prerequisites
+
+    - name: Configure GCC for x86_64
+      run: |
+        mkdir gcc-build
+        cd gcc-build
+        
+        # 💡 原生配置：不指定 --host 和 --target，默认直接构建为当前系统的 x86_64 架构
+        # 将 --prefix 设为 /usr/local/gcc-custom，防止覆盖系统自带的默认 gcc
+        ../gcc-src/configure \
+          --prefix=/usr/local/gcc-custom \
+          --enable-languages=c,c++ \
+          --disable-multilib \
+          --disable-bootstrap
+
+    - name: Build GCC
+      run: |
+        cd gcc-build
+        # 利用 Ubuntu 虚拟机的全部 CPU 核心进行高速多核编译
+        make -j$(nproc)
+
+    - name: Install to Staging Directory
+      run: |
+        cd gcc-build
+        # 按照标准的 Debian 包目录结构创建临时安装根目录
+        mkdir -p ./deb-root/DEBIAN
+        mkdir -p ./deb-root/usr/local
+        # 将编译好的产物安装到 deb-root 的相对目录下
+        make install DESTDIR=$(pwd)/deb-root
+
+    - name: Generate DEB Control File
+      run: |
+        # 动态创建 DEB 包不可或缺的控制属性描述文件，架构指定为 amd64 (即 x86_64)
+        cat <<EOF > ./gcc-build/deb-root/DEBIAN/control
+        Package: gcc-custom-x86
+        Version: 16.1.0
+        Section: devel
+        Priority: optional
+        Architecture: amd64
+        Maintainer: GitHub Actions Build <noreply@github.com>
+        Description: Custom GNU Compiler Collection built natively for Ubuntu x86_64.
+         This package includes support for C and C++, installed to /usr/local/gcc-custom.
+        EOF
+
+    - name: Package to DEB
+      run: |
+        # 将刚才组装好目录结构的文件夹打包为标准的 .deb 文件
+        dpkg-deb --build ./gcc-build/deb-root gcc-custom_x86_64.deb
+
+    - name: Create GitHub Release and Upload DEB
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        name: "GCC Ubuntu x86_64 DEB Build (${{ github.event.inputs.release_tag }})"
+        body: |
+          ### GCC x86_64 Ubuntu DEB Package
+          This Debian package was natively compiled on an **Ubuntu Linux Runner**.
+          
+          **How to install on your Ubuntu x86_64 machine:**
+          ```bash
+          sudo dpkg -i gcc-custom_x86_64.deb
+          ```
+          
+          **How to use this custom GCC after installation:**
+          The binaries are installed under `/usr/local/gcc-custom/bin/`. You can call them directly or add them to your PATH:
+          ```bash
+          export PATH=/usr/local/gcc-custom/bin:\$PATH
+          ```
+        draft: false
+        prerelease: false
+        files: gcc-custom_x86_64.deb

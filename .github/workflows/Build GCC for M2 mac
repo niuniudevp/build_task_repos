@@ -1,0 +1,78 @@
+name: Build GCC for M2 Mac
+
+on:
+  workflow_dispatch: # 允许手动触发
+    inputs:
+      gcc_version:
+        description: 'GCC Version to build'
+        required: true
+        default: 'releases/gcc-14.1.0'
+      release_tag:
+        description: 'Release Tag Name'
+        required: true
+        default: 'v14.1.0-m2'
+
+jobs:
+  build-gcc:
+    runs-on: macos-14 # M系列芯片原生运行环境
+    
+    permissions:
+      contents: write # 赋予工作流创建 Release 的写入权限
+    
+    steps:
+    # 删除了 checkout 步骤，直接从零开始构建
+
+    - name: Install Build Dependencies
+      run: |
+        brew install gmp mpfr libmpc bzip2 texinfo
+        echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+    - name: Clone GCC Source
+      run: |
+        # 使用你在手动触发时输入的 GCC 版本
+        git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://gnu.org gcc-src
+
+    - name: Download GCC Prerequisites
+      run: |
+        cd gcc-src
+        ./contrib/download_prerequisites
+
+    - name: Configure GCC
+      run: |
+        mkdir gcc-build
+        cd gcc-build
+        ../gcc-src/configure \
+          --prefix=/usr/local/gcc-m2 \
+          --with-gmp=/opt/homebrew \
+          --with-mpfr=/opt/homebrew \
+          --with-mpc=/opt/homebrew \
+          --enable-languages=c,c++ \
+          --disable-multilib
+
+    - name: Build GCC
+      run: |
+        cd gcc-build
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Install GCC to Staging Directory
+      run: |
+        cd gcc-build
+        mkdir -p ./dmg-root
+        make install DESTDIR=$(pwd)/dmg-root
+
+    - name: Create DMG Package
+      run: |
+        hdiutil create -volname "GCC-M2-Mac" \
+                       -srcfolder ./gcc-build/dmg-root \
+                       -ov -format UDZO \
+                       gcc-m2-mac.dmg
+
+    - name: Create GitHub Release and Upload DMG
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        name: "GCC M2 Build (${{ github.event.inputs.release_tag }})"
+        body: "Automated GCC build for Apple Silicon M2 Mac."
+        draft: false
+        prerelease: false
+        files: gcc-m2-mac.dmg

@@ -1,0 +1,91 @@
+name: Build GCC for M2 Mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      gcc_version:
+        description: 'GCC Version Tag (from gcc-mirror)'
+        required: true
+        default: 'releases/gcc-16.1.0'
+      release_tag:
+        description: 'Release Tag Name for your repo'
+        required: true
+        default: 'v16.1.0-m2'
+
+jobs:
+  build-gcc:
+    runs-on: macos-14 # M系列芯片原生环境
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Install Build Dependencies
+      run: |
+        # 增加 zstd, xz 等现代 GCC 构建不可或缺的依赖
+        brew install gmp mpfr libmpc bzip2 texinfo zstd xz
+        echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+    - name: Clone GCC Source
+      run: |
+        git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://github.com/gcc-mirror/gcc.git gcc-src
+
+    - name: Download GCC Prerequisites
+      run: |
+        cd gcc-src
+        ./contrib/download_prerequisites
+
+    - name: Configure GCC
+      run: |
+        mkdir gcc-build
+        cd gcc-build
+        
+        # 核心修正：显式将 Homebrew 的路径和 macOS SDK 路径暴露给编译器环境变量
+        export SDKROOT=$(xcrun --show-sdk-path)
+        export CPPFLAGS="-I/opt/homebrew/include"
+        export LDFLAGS="-L/opt/homebrew/lib"
+        export CFLAGS="-I/opt/homebrew/include"
+        export CXXFLAGS="-I/opt/homebrew/include"
+        
+        ../gcc-src/configure \
+          --prefix=/usr/local/gcc-m2 \
+          --with-gmp=/opt/homebrew \
+          --with-mpfr=/opt/homebrew \
+          --with-mpc=/opt/homebrew \
+          --with-zstd=/opt/homebrew \
+          --with-sysroot=$SDKROOT \
+          --enable-languages=c,c++ \
+          --disable-multilib \
+          --disable-bootstrap
+          # 💡 提示：--disable-bootstrap 可以直接跳过繁琐的 3 阶段自举编译（GCC自己编译自己）
+          # 这不仅能绕过大量的 stage 级环境 Bug，还能将原先 1 个多小时的编译时间缩短到 20 分钟左右！
+
+    - name: Build GCC
+      run: |
+        cd gcc-build
+        # 继承环境变量并开始多核编译
+        export SDKROOT=$(xcrun --show-sdk-path)
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Install GCC to Staging Directory
+      run: |
+        cd gcc-build
+        mkdir -p ./dmg-root
+        make install DESTDIR=$(pwd)/dmg-root
+
+    - name: Create DMG Package
+      run: |
+        hdiutil create -volname "GCC-M2-Mac" \
+                       -srcfolder ./gcc-build/dmg-root \
+                       -ov -format UDZO \
+                       gcc-m2-mac.dmg
+
+    - name: Create GitHub Release and Upload DMG
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        name: "GCC M2 Build (${{ github.event.inputs.release_tag }})"
+        body: "Automated GCC build for Apple Silicon M2 Mac using GitHub Mirror."
+        draft: false
+        prerelease: false
+        files: gcc-m2-mac.dmg

@@ -1,4 +1,4 @@
-name: Build GCC for M2 Mac
+name: Build Independent GCC for M2 Mac (No Brew Dependency)
 
 on:
   workflow_dispatch:
@@ -10,60 +10,50 @@ on:
       release_tag:
         description: 'Release Tag Name for your repo'
         required: true
-        default: 'v16.1.0-m2'
+        default: 'v16.1.0-m2-standalone'
 
 jobs:
-  build-gcc:
-    runs-on: macos-14 # M系列芯片原生环境
+  build-gcc-standalone:
+    runs-on: macos-14 # 💡 切回 M系列芯片原生环境
     
     permissions:
-      contents: write
+      contents: write # 确保有权限自动创建 Release
     
     steps:
-    - name: Install Build Dependencies
-      run: |
-        # 增加 zstd, xz 等现代 GCC 构建不可或缺的依赖
-        brew install gmp mpfr libmpc bzip2 texinfo zstd xz
-        echo "/opt/homebrew/bin" >> $GITHUB_PATH
+    # 🌟 完全没有了 brew install gmp/mpfr/libmpc 的步骤，确保无污染
 
     - name: Clone GCC Source
       run: |
         git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://github.com/gcc-mirror/gcc.git gcc-src
 
-    - name: Download GCC Prerequisites
+    - name: Download and In-tree GCC Prerequisites
       run: |
         cd gcc-src
+        # 💡 核心步骤：此脚本会将 gmp/mpfr/mpc 源码直接下载到 gcc 源码树内
+        # GCC 构建系统检测到它们后，会自动以静态链接（Static Link）的方式将它们编译进 GCC 内部
         ./contrib/download_prerequisites
 
-    - name: Configure GCC
+    - name: Configure GCC (Standalone Mode)
       run: |
         mkdir gcc-build
         cd gcc-build
         
-        # 核心修正：显式将 Homebrew 的路径和 macOS SDK 路径暴露给编译器环境变量
+        # 动态捕获当前 Mac 系统的纯净 SDK 路径，不依赖任何第三方包管理器
         export SDKROOT=$(xcrun --show-sdk-path)
-        export CPPFLAGS="-I/opt/homebrew/include"
-        export LDFLAGS="-L/opt/homebrew/lib"
-        export CFLAGS="-I/opt/homebrew/include"
-        export CXXFLAGS="-I/opt/homebrew/include"
         
+        # 💡 注意：这里没有配置任何 --with-gmp 等外部路径参数
         ../gcc-src/configure \
           --prefix=/usr/local/gcc-m2 \
-          --with-gmp=/opt/homebrew \
-          --with-mpfr=/opt/homebrew \
-          --with-mpc=/opt/homebrew \
-          --with-zstd=/opt/homebrew \
           --with-sysroot=$SDKROOT \
           --enable-languages=c,c++ \
           --disable-multilib \
           --disable-bootstrap
-          # 💡 提示：--disable-bootstrap 可以直接跳过繁琐的 3 阶段自举编译（GCC自己编译自己）
-          # 这不仅能绕过大量的 stage 级环境 Bug，还能将原先 1 个多小时的编译时间缩短到 20 分钟左右！
+          # 提示：--disable-bootstrap 在这里至关重要，它能防止在纯净环境下
+          # 因为多阶段自举而引发的 host/target 动态库查找路径循环死锁，极大提高 CI 成功率。
 
     - name: Build GCC
       run: |
         cd gcc-build
-        # 继承环境变量并开始多核编译
         export SDKROOT=$(xcrun --show-sdk-path)
         make -j$(sysctl -n hw.ncpu)
 
@@ -73,19 +63,30 @@ jobs:
         mkdir -p ./dmg-root
         make install DESTDIR=$(pwd)/dmg-root
 
-    - name: Create DMG Package
+    - name: Create Independent DMG Package
       run: |
-        hdiutil create -volname "GCC-M2-Mac" \
+        # 将完全独立的编译产物封装进 DMG
+        hdiutil create -volname "GCC-M2-Standalone" \
                        -srcfolder ./gcc-build/dmg-root \
                        -ov -format UDZO \
-                       gcc-m2-mac.dmg
+                       gcc-m2-standalone.dmg
 
     - name: Create GitHub Release and Upload DMG
       uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.event.inputs.release_tag }}
-        name: "GCC M2 Build (${{ github.event.inputs.release_tag }})"
-        body: "Automated GCC build for Apple Silicon M2 Mac using GitHub Mirror."
+        name: "GCC M2 Standalone Build (${{ github.event.inputs.release_tag }})"
+        body: |
+          ### GCC Standalone Binary for Apple Silicon M2 Mac
+          This build is **completely independent** and has **NO dependencies on Homebrew**.
+          
+          **Features:**
+          - Static linked `gmp`, `mpfr`, and `mpc`.
+          - Can be installed on any M1/M2/M3 Mac directly.
+          
+          **How to Use:**
+          1. Mount the `.dmg` file.
+          2. Copy the internal files to your system or specific directory (e.g., `/usr/local/gcc-m2`).
         draft: false
         prerelease: false
-        files: gcc-m2-mac.dmg
+        files: gcc-m2-standalone.dmg

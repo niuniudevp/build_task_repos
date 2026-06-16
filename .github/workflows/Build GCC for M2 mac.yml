@@ -30,7 +30,7 @@ jobs:
     - name: Clone GCC Source
       run: |
         # 使用你在手动触发时输入的 GCC 版本
-        git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://gnu.org gcc-src
+        git clone --depth 1 --branch ${{ github.event.inputs.gcc_version }} https://github.com/gcc-mirror/gcc.git gcc-src
 
     - name: Download GCC Prerequisites
       run: |
